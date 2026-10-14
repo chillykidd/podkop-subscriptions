@@ -68,13 +68,13 @@ ucode /usr/share/podkop-subscriptions/integrate.uc install
 # Remove the previous 0.1 source installation's standalone page.
 rm -f /usr/share/luci/menu.d/luci-app-podkop-subscriptions.json \
     /www/luci-static/resources/view/podkop-subscriptions/overview.js
-printf '%s\n' '0.2.1 (inline source installation)' > /usr/share/podkop-subscriptions/VERSION
+printf '%s\n' '0.2.2 (inline source installation)' > /usr/share/podkop-subscriptions/VERSION
 # Regenerate the LuCI menu, then register the dedicated RPC plugin.
 # Podkop, sing-box, networking and firewall services are not restarted.
 for cache in /tmp/luci-indexcache*; do
     [ -f "$cache" ] && rm -f "$cache"
 done
 /etc/init.d/rpcd restart
-echo "Installed Podkop subscriptions 0.2.1. Backup: $BACKUP"
+echo "Installed Podkop subscriptions 0.2.2. Backup: $BACKUP"
 echo 'Open Services -> Podkop -> Connection Type -> Подписка. Log in to LuCI again if needed.'
 echo 'Podkop routing configuration and running connections have not been changed.'

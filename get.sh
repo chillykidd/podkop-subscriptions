@@ -3,7 +3,7 @@ set -eu
 umask 077
 
 REPO=chillykidd/podkop-subscriptions
-VERSION=0.2.1
+VERSION=0.2.2
 ARCHIVE=podkop-subscriptions-$VERSION.tar.gz
 BASE=https://github.com/$REPO/releases/download/v$VERSION
 MODE=${1:-install}
@@ -41,6 +41,7 @@ echo "Downloading Podkop subscriptions $VERSION..."
 download "$BASE/$ARCHIVE" "$work/$ARCHIVE" 4194304
 download "$BASE/SHA256SUMS" "$work/SHA256SUMS" 512
 IFS=' ' read -r expected filename < "$work/SHA256SUMS"
+filename=${filename%$(printf '\r')}
 case "$expected" in ''|*[!0-9a-f]*) echo 'Invalid checksum file.' >&2; exit 1 ;; esac
 [ "${#expected}" = 64 ] && [ "$filename" = "$ARCHIVE" ] || { echo 'Invalid checksum file.' >&2; exit 1; }
 actual=$(sha256sum "$work/$ARCHIVE")
