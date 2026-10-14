@@ -1,0 +1,13 @@
+#!/bin/sh /etc/rc.common
+START=98
+
+start() {
+    [ -x /usr/bin/podkop ] && [ -f /etc/config/podkop ] || return 1
+    mkdir -p /etc/podkop-subscriptions/integration
+    # Reattach on boot after a Podkop update, but never replace an unknown view.
+    ucode /usr/share/podkop-subscriptions/integrate.uc install || return 1
+    for cache in /tmp/luci-indexcache*; do
+        [ -f "$cache" ] && rm -f "$cache"
+    done
+    return 0
+}

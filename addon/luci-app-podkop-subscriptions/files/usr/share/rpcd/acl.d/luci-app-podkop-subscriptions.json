@@ -1,0 +1,13 @@
+{
+  "luci-app-podkop-subscriptions": {
+    "description": "Manage subscriptions and stage standard Podkop proxy configuration",
+    "read": {
+      "ubus": { "podkop-subscriptions": ["cache", "resolve"] },
+      "uci": ["podkop_subscriptions", "podkop"]
+    },
+    "write": {
+      "ubus": { "podkop-subscriptions": ["refresh", "probe"] },
+      "uci": ["podkop_subscriptions", "podkop"]
+    }
+  }
+}

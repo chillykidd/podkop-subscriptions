@@ -1,0 +1,28 @@
+#!/bin/sh
+# Only named RPC methods are exposed; caller input is JSON, never shell code.
+case "$1" in
+    list)
+        printf '%s\n' '{"cache":{"url":""},"refresh":{"url":""},"probe":{"url":"","server":""},"resolve":{"url":"","server":""}}'
+        ;;
+    call)
+        case "$2" in
+            cache|refresh|probe|resolve)
+                umask 077
+                mkdir -p /tmp/podkop-subscriptions
+                # Nonblocking lock prevents concurrent downloads and probe storms.
+                # Atomic rename lets cache readers run without holding this lock.
+                if [ "$2" = cache ] || [ "$2" = resolve ]; then
+                    exec ucode /usr/share/podkop-subscriptions/backend.uc "$2"
+                fi
+                exec 9>/tmp/podkop-subscriptions/request.lock
+                if ! flock -n 9; then
+                    printf '%s\n' '{"ok":false,"error":"busy","message":"Уже выполняется проверка. Повторите позже."}'
+                    exit 0
+                fi
+                exec ucode /usr/share/podkop-subscriptions/backend.uc "$2"
+                ;;
+            *) exit 1 ;;
+        esac
+        ;;
+    *) exit 1 ;;
+esac
