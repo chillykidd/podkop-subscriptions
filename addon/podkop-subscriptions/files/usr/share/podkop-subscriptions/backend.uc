@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import { sha256 } from 'digest';
-import { parse } from './parser.uc';
+import { parse, assign_ids, connection_id } from './parser.uc';
 
 const dir = getenv('PODKOP_SUBSCRIPTIONS_CACHE') || '/tmp/podkop-subscriptions';
 function fail(code, message) { return { ok: false, error: code, message }; }
@@ -19,10 +19,10 @@ function readCache(path) {
         return type(data.servers) == 'array' ? data : null;
     } catch (e) { return null; }
 }
-function publicCache(data) {
-    return { ok: true, cached: true, fetched_at: data.fetched_at,
-        skipped: data.skipped, servers: map(data.servers, function(s) {
-            return { id: s.id, name: s.name, host: s.host, port: s.port, protocol: s.protocol };
+function publicCache(data, url) {
+    return { ok: true, cached: true, source: sha256(url), fetched_at: data.fetched_at,
+        skipped: data.skipped, servers: map(assign_ids(data.servers), function(s) {
+            return { id: s.id, connection: connection_id(s.link), name: s.name, host: s.host, port: s.port, protocol: s.protocol };
         }) };
 }
 function atomicWrite(path, data) {
@@ -48,7 +48,7 @@ function run(method, request) {
     let path = dir + '/' + sha256(url) + '.json';
     let old = readCache(path);
     if (method == 'cache')
-        return old ? publicCache(old) : { ok: true, cached: false, servers: [] };
+        return old ? publicCache(old, url) : { ok: true, cached: false, source: sha256(url), servers: [] };
     if (method == 'refresh') {
         let rawpath = path + '.download';
         // -q disables .curlrc. TLS is always verified; redirects stay on HTTPS.
@@ -70,8 +70,8 @@ function run(method, request) {
         let files = filter(fs.glob(dir + '/*.json') || [], function(p) { return p != path; });
         sort(files, function(a, b) { return fs.stat(a).mtime - fs.stat(b).mtime; });
         while (length(files) > 15) fs.unlink(shift(files));
-        let result = publicCache(data);
-        let prev = old ? map(old.servers, function(s) { return s.id; }) : [];
+        let result = publicCache(data, url);
+        let prev = old ? map(assign_ids(old.servers), function(s) { return s.id; }) : [];
         let next = map(data.servers, function(s) { return s.id; });
         result.added = old ? filter(next, function(id) { return index(prev, id) < 0; }) : [];
         result.removed = filter(prev, function(id) { return index(next, id) < 0; });
@@ -80,10 +80,26 @@ function run(method, request) {
     if (type(request.server) != 'string' || !match(request.server, /^[0-9a-f]{64}$/))
         return fail('invalid_server', 'Неверный идентификатор сервера.');
     if (!old) return fail('no_cache', 'Сначала обновите подписку.');
-    let matches = filter(old.servers, function(s) { return s.id == request.server; });
-    if (!length(matches)) return fail('missing_server', 'Выбранный сервер отсутствует в подписке. Выберите другой вручную.');
+    let servers = assign_ids(old.servers);
+    let matches = filter(servers, function(s) { return s.id == request.server || s.legacy_id == request.server; });
+    // Migrate bindings made with full-URI IDs without matching by display name.
+    if (!length(matches) && method == 'resolve' && type(request.link) == 'string') {
+        try {
+            let previous = parse(request.link);
+            if (length(previous.servers) == 1) {
+                let entry = previous.servers[0];
+                let byName = filter(servers, function(s) { return s.name == entry.name; });
+                if (length(byName) == 1) matches = byName;
+                else {
+                    let candidates = length(byName) ? byName : servers;
+                    matches = filter(candidates, function(s) { return connection_id(s.link) == connection_id(entry.link); });
+                }
+            }
+        } catch (e) { }
+    }
+    if (length(matches) != 1) return fail('missing_server', 'Выбранный сервер отсутствует в подписке или его название неоднозначно. Выберите другой вручную.');
     let server = matches[0];
-    if (method == 'resolve') return { ok: true, link: server.link };
+    if (method == 'resolve') return { ok: true, id: server.id, connection: connection_id(server.link), name: server.name, link: server.link };
     if (method == 'probe') {
         // This measures ICMP reachability, never proxy authentication or speed.
         let response = command('ping -c 1 -W 2 -w 3 ' + quote(server.host));

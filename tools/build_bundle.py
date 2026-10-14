@@ -4,7 +4,7 @@ import tarfile
 import hashlib
 
 root = Path(__file__).resolve().parents[1]
-output = root / "dist" / "podkop-subscriptions-0.2.0.tar.gz"
+output = root / "dist" / "podkop-subscriptions-0.2.1.tar.gz"
 output.parent.mkdir(exist_ok=True)
 with tarfile.open(output, "w:gz", format=tarfile.PAX_FORMAT) as archive:
     files = [*sorted((root / "addon").rglob("*")), root / "install.sh",
@@ -13,7 +13,7 @@ with tarfile.open(output, "w:gz", format=tarfile.PAX_FORMAT) as archive:
         if not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
-        info = archive.gettarinfo(str(path), "podkop-subscriptions-0.2.0/" + relative)
+        info = archive.gettarinfo(str(path), "podkop-subscriptions-0.2.1/" + relative)
         info.uid = info.gid = 0
         info.uname = info.gname = "root"
         info.mtime = 0

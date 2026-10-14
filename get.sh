@@ -3,7 +3,7 @@ set -eu
 umask 077
 
 REPO=chillykidd/podkop-subscriptions
-VERSION=0.2.0
+VERSION=0.2.1
 ARCHIVE=podkop-subscriptions-$VERSION.tar.gz
 BASE=https://github.com/$REPO/releases/download/v$VERSION
 MODE=${1:-install}

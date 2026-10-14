@@ -6,11 +6,19 @@ let source = fs.readFileSync(path.join(__dirname,
     '../addon/luci-app-podkop-subscriptions/files/www/luci-static/resources/view/podkop/subscriptions.js'), 'utf8');
 // Expose internal operations to the harness without adding a production API.
 source = source.replace('return baseclass.extend({ attach: attach });',
-    'return { attach, stateFor, choose, save, importLegacy, update };');
+    'return { attach, stateFor, choose, save, importLegacy, update, restoreSelection };');
 const urlA = 'https://first.example/sub', urlB = 'https://second.example/sub';
 const nodeA = { id: 'a'.repeat(64), name: 'Same', host: 'one.example', port: 443 };
 const nodeB = { id: 'b'.repeat(64), name: 'Same', host: 'two.example', port: 443 };
-let writes = [], missing = '';
+const nodeC = { id: 'd'.repeat(64), connection: 'e'.repeat(64), name: 'Other', host: 'three.example', port: 443 };
+const sourceA = '1'.repeat(64), sourceB = '2'.repeat(64);
+let writes = [], missing = '', links = {}, aliases = {}, extraServers = [];
+const storage = new Map();
+const browser = { sessionStorage: {
+    getItem: key => storage.get(key) || null,
+    setItem: (key, value) => storage.set(key, value),
+    removeItem: key => storage.delete(key)
+} };
 const config = { podkop: {
     main: { '.type': 'section', connection_type: 'subscription', subscription_url: urlA, subscription_server: 'Same' },
     youtube: { '.type': 'section', connection_type: 'subscription', subscription_url: urlB, subscription_server: 'Same' }
@@ -23,12 +31,20 @@ const uci = {
         .map(([id, s]) => ({ ...s, '.name': id }))
 };
 const rpc = { declare: ({ method }) => async (url, id) => {
-    if (method === 'refresh') return { ok: true, cached: true, servers: [url === urlA ? nodeA : nodeB] };
-    if (method === 'resolve') return id === missing ? { ok: false, message: 'Missing server' } :
-        { ok: true, link: 'vless://user@' + (id === nodeA.id ? 'one' : 'two') + '.example:443' };
+    if (method === 'refresh') return { ok: true, cached: true, source: url === urlA ? sourceA : sourceB,
+        servers: url === urlA ? [nodeA, nodeC] : [nodeB] };
+    if (method === 'resolve') {
+        if (id === missing) return { ok: false, error: 'missing_server', message: 'Missing server' };
+        id = aliases[id] || id;
+        const server = [nodeA, nodeB, nodeC, ...extraServers].find(s => s.id === id);
+        return { ok: true, id, connection: server.connection, name: server.name, link: links[id] || 'vless://user@' + server.host + ':443' };
+    }
 } };
-const api = new Function('baseclass', 'form', 'rpc', 'uci', 'ui', source)(
-    { extend: x => x }, { Value: 'Value' }, rpc, uci, {});
+function createApi() {
+    return new Function('baseclass', 'form', 'rpc', 'uci', 'ui', 'window', source)(
+        { extend: x => x }, { Value: 'Value' }, rpc, uci, {}, browser);
+}
+const api = createApi();
 function fakeOption(option) {
     return { option, keylist: [], values: {}, value(key, label) { this.keylist.push(key); },
         depends() {}, cfgvalue(id, value) { if (arguments.length > 1) this.values[id] = value; return this.values[id]; },
@@ -38,7 +54,9 @@ const connection = fakeOption('connection_type');
 connection.cfgvalue('main', 'subscription'); connection.cfgvalue('youtube', 'subscription');
 const proxyType = fakeOption('proxy_config_type'), proxyLink = fakeOption('proxy_string');
 const section = { children: [connection, proxyType, proxyLink],
-    map: { chain(config) { this.chained = config; } },
+    map: { chain(config) { this.chained = config; },
+        async save() { if (this.failSave) throw new Error('invalid field'); await option.write('main'); },
+        reset() { this.resetCalled = true; } },
     option(type, name) { const o = fakeOption(name); this.children.push(o); return o; } };
 api.attach(section);
 api.attach(section);
@@ -50,7 +68,7 @@ const option = section.children[1];
 
 (async () => {
     const a = api.stateFor('main'), b = api.stateFor('youtube');
-    a.groups.set(urlA, { servers: [nodeA] }); b.groups.set(urlB, { servers: [nodeB] });
+    a.groups.set(urlA, { source: sourceA, servers: [nodeA, nodeC] }); b.groups.set(urlB, { source: sourceB, servers: [nodeB] });
     await api.importLegacy(a); await api.importLegacy(b);
     assert.equal(writes.length, 0, 'loading legacy selections cannot change routing');
     assert.equal(a.selected.id, nodeA.id); assert.equal(b.selected.id, nodeB.id);
@@ -70,10 +88,60 @@ const option = section.children[1];
     connection.cfgvalue('main', 'proxy');
     assert.equal(connection.cfgvalue('main'), 'subscription', 'saved native proxy displays as subscription');
     assert.equal(option.forcewrite, true, 'URL list edits are saved even with an unchanged selection');
+    // Upgrade old full-URI IDs and use the latest provider parameters on save.
+    const oldId = 'c'.repeat(64);
+    aliases[oldId] = nodeA.id;
+    config.podkop_subscriptions.bind_main.server = oldId;
+    links[nodeA.id] = 'vless://user@one.example:443?security=reality&sid=new&spx=%2Fnew';
+    const restored = createApi();
+    const upgraded = restored.stateFor('main');
+    upgraded.groups.set(urlA, { source: sourceA, servers: [nodeA, nodeC] });
+    await restored.restoreSelection(upgraded);
+    assert.equal(upgraded.selected.id, nodeA.id, 'old binding resolves to stable server ID');
+    await restored.save('main');
+    assert.equal(config.podkop.main.proxy_string, links[nodeA.id] + '#Same', 'saving takes latest Reality parameters');
+    links = {};
+    a.selected = { ...upgraded.selected };
     missing = nodeA.id;
     await option.write('main'); // Saving unchanged bindings works without RAM cache.
+    missing = '';
+    a.map = section.map;
+    await api.choose(a, urlA, nodeC);
+    const draft = JSON.parse(storage.get('podkop-subscriptions:draft:main'));
+    assert.deepEqual(draft, { source: sourceA, id: nodeC.id, connection: nodeC.connection });
+    assert.equal(JSON.stringify(draft).includes(urlA), false, 'draft contains no URL or proxy credentials');
+    const reloaded = createApi();
+    const reloadedState = reloaded.stateFor('main');
+    reloadedState.groups.set(urlA, { source: sourceA, servers: [nodeA, nodeC] });
+    await reloaded.restoreSelection(reloadedState);
+    assert.equal(reloadedState.selected.id, nodeC.id, 'page reload restores pending choice');
+    assert.equal(config.podkop_subscriptions.bind_main.server, nodeA.id, 'restoring draft cannot apply it');
+    const renamedNode = { ...nodeC, id: 'f'.repeat(64), name: 'Renamed' };
+    extraServers = [renamedNode];
+    const renamedApi = createApi(), renamedState = renamedApi.stateFor('main');
+    renamedState.groups.set(urlA, { source: sourceA, servers: [nodeA, renamedNode] });
+    await renamedApi.restoreSelection(renamedState);
+    assert.equal(renamedState.selected.id, renamedNode.id, 'draft survives a unique rename with the same connection');
+    const ambiguousApi = createApi(), ambiguousState = ambiguousApi.stateFor('main');
+    ambiguousState.groups.set(urlA, { source: sourceA, servers: [nodeA, renamedNode, { ...renamedNode, id: '0'.repeat(64) }] });
+    await ambiguousApi.restoreSelection(ambiguousState);
+    assert.equal(ambiguousState.selected.id, nodeA.id, 'ambiguous rename must not replace the saved choice');
+    extraServers = [];
+    section.map.failSave = true;
+    await assert.rejects(section.map.save(), /invalid field/);
+    assert.equal(storage.has('podkop-subscriptions:draft:main'), true, 'failed form save retains the draft');
+    section.map.failSave = false;
+    await section.map.save();
+    assert.equal(storage.has('podkop-subscriptions:draft:main'), false, 'successful form save clears the draft');
+    assert.equal(config.podkop_subscriptions.bind_main.server, nodeC.id);
+    const persisted = createApi();
+    assert.equal(persisted.stateFor('main').selected.id, nodeC.id, 'saved choice survives a new page instance');
+    await api.choose(a, urlA, nodeA);
+    section.map.reset();
+    assert.equal(storage.has('podkop-subscriptions:draft:main'), false, 'Reset discards the draft');
+    assert.equal(api.stateFor('main').selected.id, nodeC.id, 'Reset returns to the saved choice');
     connection.write('main', 'proxy');
     assert.equal(config.podkop_subscriptions.bind_main.enabled, '0', 'manual Proxy disables the virtual mode');
     assert.equal(connection.cfgvalue('main'), 'proxy');
-    console.log('Embedded UI: legacy import, stable IDs, no automatic switching, native proxy save, retention and manual-mode switch passed');
+    console.log('Embedded UI: stable ID migration, latest URI, draft/page reload, successful/failed save, Reset and manual-mode switch passed');
 })().catch(e => { console.error(e); process.exitCode = 1; });

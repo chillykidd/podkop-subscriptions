@@ -10,6 +10,40 @@ function label(fragment) {
     return substr(trim(replace(decoded, /[[:cntrl:]]/g, '')), 0, 512);
 }
 
+export function connection_id(link) {
+    let uri = split(link, '#')[0];
+    let query = index(uri, '?');
+    if (query < 0) return sha256(uri);
+    let pairs = split(substr(uri, query + 1), '&');
+    let reality = index(pairs, 'security=reality') >= 0;
+    let keys = {}, unique = true;
+    pairs = filter(pairs, function(pair) {
+        let key = split(pair, '=')[0];
+        // Providers may rotate accepted Reality short IDs and spider paths on
+        // every fetch. Endpoint, user, public key and SNI still identify it.
+        if (reality && (key == 'sid' || key == 'spx')) return false;
+        if (keys[key]) unique = false;
+        keys[key] = true;
+        return true;
+    });
+    if (unique) sort(pairs);
+    return sha256(substr(uri, 0, query) + (length(pairs) ? '?' + join('&', pairs) : ''));
+};
+
+export function assign_ids(servers) {
+    let counts = {};
+    for (let server in servers) counts[server.name] = (counts[server.name] || 0) + 1;
+    return map(servers, function(server) {
+        let result = {};
+        for (let key in keys(server)) result[key] = server[key];
+        result.legacy_id = server.id;
+        // A unique provider label identifies the logical entry even when its
+        // address or credentials rotate. Duplicate labels need a connection ID.
+        result.id = sha256('node:' + server.name + (counts[server.name] > 1 ? '\n' + connection_id(server.link) : ''));
+        return result;
+    });
+};
+
 export function parse(raw) {
     if (type(raw) != 'string' || length(raw) > 524288)
         die('Subscription is too large');
@@ -48,13 +82,14 @@ export function parse(raw) {
         if (!address || int(address[2]) < 1 || int(address[2]) > 65535) {
             skipped++; continue;
         }
-        let id = sha256(uri);
-        if (seen[id]) continue;
-        seen[id] = true;
+        let id = connection_id(uri);
+        let duplicate = id + '\n' + name;
+        if (seen[duplicate]) continue;
+        seen[duplicate] = true;
         if (length(result) >= 256) die('Too many servers (maximum 256)');
         push(result, { id, name: length(name) ? name : address[1] + ':' + address[2],
             host: address[1], port: int(address[2]), protocol: parts[1], link: uri });
     }
     if (!length(result)) die('No supported proxy URIs');
-    return { servers: result, skipped };
+    return { servers: assign_ids(result), skipped };
 };

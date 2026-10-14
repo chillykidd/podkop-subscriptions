@@ -2,7 +2,7 @@
 # Only named RPC methods are exposed; caller input is JSON, never shell code.
 case "$1" in
     list)
-        printf '%s\n' '{"cache":{"url":""},"refresh":{"url":""},"probe":{"url":"","server":""},"resolve":{"url":"","server":""}}'
+        printf '%s\n' '{"cache":{"url":""},"refresh":{"url":""},"probe":{"url":"","server":""},"resolve":{"url":"","server":"","link":""}}'
         ;;
     call)
         case "$2" in

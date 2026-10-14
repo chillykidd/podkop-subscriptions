@@ -7,18 +7,46 @@
 
 const cache = rpc.declare({ object: 'podkop-subscriptions', method: 'cache', params: ['url'], expect: {} });
 const refresh = rpc.declare({ object: 'podkop-subscriptions', method: 'refresh', params: ['url'], expect: {} });
-const resolve = rpc.declare({ object: 'podkop-subscriptions', method: 'resolve', params: ['url', 'server'], expect: {} });
+const resolve = rpc.declare({ object: 'podkop-subscriptions', method: 'resolve', params: ['url', 'server', 'link'], expect: {} });
 const probe = rpc.declare({ object: 'podkop-subscriptions', method: 'probe', params: ['url', 'server'], expect: {} });
 const states = Object.create(null);
 let queue = Promise.resolve();
 
 function request(fn) { const result = queue.catch(() => {}).then(fn); queue = result; return result; }
-function check(data) { if (!data || !data.ok) throw new Error(data && data.message || 'Не удалось выполнить запрос'); return data; }
+function check(data) {
+    if (!data || !data.ok) {
+        const error = new Error(data && data.message || 'Не удалось выполнить запрос');
+        error.code = data && data.error;
+        throw error;
+    }
+    return data;
+}
 function list(value) { return Array.isArray(value) ? value : value ? [value] : []; }
 function urls(value) { return Array.from(new Set(list(value).map(s => String(s).trim()).filter(Boolean))); }
 function binding(id) { return uci.get('podkop_subscriptions', 'bind_' + id) || {}; }
 function token(selected) { return selected ? selected.url + '\n' + selected.id : ''; }
-function same(a, b) { return a && b && a.url === b.url && a.id === b.id; }
+function draftKey(id) { return 'podkop-subscriptions:draft:' + id; }
+function clearDraft(id) { try { window.sessionStorage.removeItem(draftKey(id)); } catch (e) {} }
+function remember(state) {
+    const group = state.groups.get(state.selected.url);
+    if (!group || !group.source) return;
+    const server = group.servers.find(s => s.id === state.selected.id);
+    try {
+        // Only opaque IDs are stored, never subscription URLs or proxy secrets.
+        window.sessionStorage.setItem(draftKey(state.id), JSON.stringify({ source: group.source, id: state.selected.id,
+            connection: state.selected.connection || (server && server.connection) }));
+    } catch (e) {}
+}
+function readDraft(id) {
+    try {
+        const draft = JSON.parse(window.sessionStorage.getItem(draftKey(id)) || 'null');
+        return draft && /^[0-9a-f]{64}$/.test(draft.source) && /^[0-9a-f]{64}$/.test(draft.id) &&
+            (!draft.connection || /^[0-9a-f]{64}$/.test(draft.connection)) ? draft : null;
+    } catch (e) { return null; }
+}
+function setGroup(url, data) {
+    Object.values(states).filter(s => s.urls.indexOf(url) >= 0).forEach(s => s.groups.set(url, data));
+}
 
 function stateFor(id) {
     if (states[id]) return states[id];
@@ -50,9 +78,12 @@ function button(state, text, fn, disabled) {
 }
 
 async function choose(state, url, server) {
-    const reply = check(await request(() => resolve(url, server.id)));
-    state.selected = { url: url, id: server.id, name: server.name, link: reply.link };
+    const reply = check(await request(() => resolve(url, server.id, '')));
+    state.selected = { url: url, id: reply.id || server.id, connection: reply.connection || server.connection,
+        name: reply.name || server.name, link: reply.link };
     state.legacy = '';
+    state.draft = true;
+    remember(state);
     state.status = 'Выбран: ' + server.name + '. Нажмите «Сохранить и применить».';
     paintAll();
 }
@@ -68,9 +99,39 @@ async function importLegacy(state) {
         state.status = 'Старый выбор: ' + state.legacy + '. Выберите сервер вручную: совпадение не единственное или узел отсутствует.';
         return;
     }
-    const reply = check(await request(() => resolve(matches[0].url, matches[0].server.id)));
-    state.selected = { url: matches[0].url, id: matches[0].server.id, name: state.legacy, link: reply.link };
+    const reply = check(await request(() => resolve(matches[0].url, matches[0].server.id, '')));
+    state.selected = { url: matches[0].url, id: reply.id || matches[0].server.id, name: reply.name || state.legacy, link: reply.link };
     state.status = 'Текущий сервер сохранён. Настройки изменятся только при сохранении формы.';
+}
+
+async function restoreSelection(state) {
+    if (state.selected) {
+        try {
+            const current = state.selected;
+            const reply = check(await request(() => resolve(current.url, current.id, current.link + '#' + encodeURIComponent(current.name || ''))));
+            state.selected = { url: current.url, id: reply.id || current.id, name: reply.name || current.name, link: reply.link };
+        } catch (e) { state.status = e.message; }
+    }
+    await importLegacy(state);
+    const draft = readDraft(state.id);
+    if (!draft) return;
+    const source = Array.from(state.groups.entries()).find(([url, data]) => data.source === draft.source);
+    if (!source) return;
+    let server = source[1].servers.find(s => s.id === draft.id);
+    if (!server && draft.connection) {
+        const matches = source[1].servers.filter(s => s.connection === draft.connection);
+        if (matches.length === 1) server = matches[0];
+    }
+    if (!server) {
+        state.status = 'Сервер из черновика отсутствует в подписке. Сохранённый выбор оставлен без изменений.';
+        return;
+    }
+    const reply = check(await request(() => resolve(source[0], server.id, '')));
+    state.selected = { url: source[0], id: reply.id || server.id, connection: reply.connection || server.connection,
+        name: reply.name || server.name, link: reply.link };
+    state.legacy = '';
+    state.draft = true;
+    state.status = 'Выбор восстановлен из черновика. Нажмите «Сохранить и применить».';
 }
 
 async function load(state) {
@@ -78,17 +139,17 @@ async function load(state) {
         try {
             let data = check(await request(() => cache(url)));
             if (!data.cached) data = check(await request(() => refresh(url)));
-            state.groups.set(url, data);
+            setGroup(url, data);
         } catch (e) { state.status = e.message; }
         paintAll();
     }
-    await importLegacy(state);
+    await restoreSelection(state);
     paintAll();
 }
 
 async function update(state, url) {
     const data = check(await request(() => refresh(url)));
-    state.groups.set(url, data);
+    setGroup(url, data);
     state.status = 'Список обновлён' + (data.skipped ? '; пропущено строк: ' + data.skipped : '');
     await importLegacy(state);
 }
@@ -163,17 +224,21 @@ function paint(state) {
 }
 
 async function save(id) {
-    const state = stateFor(id), selected = state.selected;
+    const state = stateFor(id);
+    let selected = state.selected;
     if (state.busy || !selected || !selected.link) throw new Error('Дождитесь загрузки подписки и выберите сервер для ' + id);
     const saved = binding(id);
     // Keeping an unchanged binding does not require the subscription cache or
     // provider to be available; Podkop already stores the complete proxy URI.
     const unchanged = saved.enabled === '1' && saved.link && saved.link.split('#')[0] === selected.link &&
         uci.get('podkop', id, 'connection_type') === 'proxy' && uci.get('podkop', id, 'proxy_string') === saved.link;
-    if (!unchanged) {
-        const data = check(await request(() => resolve(selected.url, selected.id)));
-        if (data.link !== selected.link) throw new Error('Ссылка изменилась. Выберите сервер повторно.');
+    try {
+        const data = check(await request(() => resolve(selected.url, selected.id, selected.link + '#' + encodeURIComponent(selected.name || ''))));
+        selected = { url: selected.url, id: data.id || selected.id, name: data.name || selected.name, link: data.link };
+    } catch (e) {
+        if (!unchanged || ['no_cache', 'missing_server'].indexOf(e.code) < 0) throw e;
     }
+    state.selected = selected;
     const sid = 'bind_' + id;
     const nativeLink = selected.link + '#' + encodeURIComponent(selected.name || '');
     if (!uci.get('podkop_subscriptions', sid)) uci.add('podkop_subscriptions', 'binding', sid);
@@ -188,6 +253,23 @@ function attach(section) {
     const connection = section.children.find(o => o.option === 'connection_type');
     if (!connection || section.children.some(o => o.option === '_podkop_subscription')) return;
     section.map.chain('podkop_subscriptions');
+    if (!section.map._podkopSubscriptions) {
+        const map = section.map, originalSave = map.save, originalReset = map.reset;
+        map._podkopSubscriptions = true;
+        map.save = function() {
+            return originalSave.apply(this, arguments).then(result => {
+                Object.values(states).filter(s => s.map === this).forEach(s => {
+                    clearDraft(s.id); s.draft = false; s.status = 'Выбор сохранён.';
+                });
+                paintAll();
+                return result;
+            });
+        };
+        map.reset = function() {
+            Object.values(states).filter(s => s.map === this).forEach(s => { clearDraft(s.id); delete states[s.id]; });
+            return originalReset.apply(this, arguments);
+        };
+    }
     ['proxy_string', 'proxy_config_type'].forEach(name => {
         const nativeOption = section.children.find(o => o.option === name);
         if (nativeOption) nativeOption.retain = true;
@@ -202,6 +284,7 @@ function attach(section) {
     };
     connection.write = function(id, value) {
         if (value === 'subscription') return; // The panel writes native proxy fields after validation.
+        clearDraft(id);
         if (uci.get('podkop_subscriptions', 'bind_' + id)) uci.set('podkop_subscriptions', 'bind_' + id, 'enabled', '0');
         return originalWrite.call(this, id, value);
     };
@@ -224,6 +307,7 @@ function attach(section) {
     option.remove = function() {};
     option.renderWidget = function(id) {
         const state = stateFor(id);
+        state.map = this.map;
         state.readonly = this.readonly != null ? this.readonly : this.map.readonly;
         state.panel = E('div', { class: 'pks-inline', 'data-pks-section': id });
         paint(state);
