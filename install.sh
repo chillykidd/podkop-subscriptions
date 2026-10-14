@@ -4,23 +4,11 @@ set -eu
 umask 077
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 [ "$(id -u)" = 0 ] || { echo 'Run as root.' >&2; exit 1; }
-package_installed() {
-    if command -v apk >/dev/null; then
-        apk info -e "$1" >/dev/null 2>&1
-    elif command -v opkg >/dev/null; then
-        opkg status "$1" 2>/dev/null | grep -q 'Status:.* installed'
-    else
-        return 1
-    fi
-}
+. "$HERE/dependencies.sh"
 for required in podkop luci-app-podkop; do
     package_installed "$required" || { echo "Install $required first. This add-on requires Podkop." >&2; exit 1; }
 done
 [ -x /usr/bin/podkop ] && [ -f /etc/config/podkop ] || { echo 'Podkop installation is incomplete.' >&2; exit 1; }
-for cmd in ucode curl flock ping; do
-    command -v "$cmd" >/dev/null || { echo "Missing dependency: $cmd" >&2; exit 1; }
-done
-ucode -e 'import * as fs from "fs"; import { sha256 } from "digest"; print(sha256("check"));' >/dev/null
 for package in podkop-subscriptions luci-app-podkop-subscriptions; do
     if command -v apk >/dev/null && apk info -e "$package" >/dev/null 2>&1; then
         echo "Use apk to upgrade installed package $package." >&2; exit 1
@@ -30,6 +18,14 @@ for package in podkop-subscriptions luci-app-podkop-subscriptions; do
     fi
 done
 [ -d /www/luci-static/resources ] || { echo 'LuCI is required.' >&2; exit 1; }
+install_dependencies
+for cmd in ucode curl flock ping; do
+    command -v "$cmd" >/dev/null || { echo "Missing dependency: $cmd" >&2; exit 1; }
+done
+ucode -e 'import * as fs from "fs"; import { sha256 } from "digest"; print(sha256("check"));' >/dev/null || {
+    echo 'ucode fs/digest modules could not be loaded; add-on files have not been changed.' >&2
+    exit 1
+}
 [ -e /etc/ssl/certs/ca-certificates.crt ] || { echo 'Install ca-bundle first.' >&2; exit 1; }
 ucode "$HERE/addon/luci-app-podkop-subscriptions/files/usr/share/podkop-subscriptions/integrate.uc" check
 
@@ -68,13 +64,13 @@ ucode /usr/share/podkop-subscriptions/integrate.uc install
 # Remove the previous 0.1 source installation's standalone page.
 rm -f /usr/share/luci/menu.d/luci-app-podkop-subscriptions.json \
     /www/luci-static/resources/view/podkop-subscriptions/overview.js
-printf '%s\n' '0.2.2 (inline source installation)' > /usr/share/podkop-subscriptions/VERSION
+printf '%s\n' '0.2.3 (inline source installation)' > /usr/share/podkop-subscriptions/VERSION
 # Regenerate the LuCI menu, then register the dedicated RPC plugin.
 # Podkop, sing-box, networking and firewall services are not restarted.
 for cache in /tmp/luci-indexcache*; do
     [ -f "$cache" ] && rm -f "$cache"
 done
 /etc/init.d/rpcd restart
-echo "Installed Podkop subscriptions 0.2.2. Backup: $BACKUP"
+echo "Installed Podkop subscriptions 0.2.3. Backup: $BACKUP"
 echo 'Open Services -> Podkop -> Connection Type -> Подписка. Log in to LuCI again if needed.'
 echo 'Podkop routing configuration and running connections have not been changed.'

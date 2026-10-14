@@ -4,16 +4,16 @@ import tarfile
 import hashlib
 
 root = Path(__file__).resolve().parents[1]
-output = root / "dist" / "podkop-subscriptions-0.2.2.tar.gz"
+output = root / "dist" / "podkop-subscriptions-0.2.3.tar.gz"
 output.parent.mkdir(exist_ok=True)
 with tarfile.open(output, "w:gz", format=tarfile.PAX_FORMAT) as archive:
-    files = [*sorted((root / "addon").rglob("*")), root / "install.sh",
+    files = [*sorted((root / "addon").rglob("*")), root / "install.sh", root / "dependencies.sh",
              root / "uninstall.sh", root / "LICENSE"]
     for path in files:
         if not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
-        info = archive.gettarinfo(str(path), "podkop-subscriptions-0.2.2/" + relative)
+        info = archive.gettarinfo(str(path), "podkop-subscriptions-0.2.3/" + relative)
         info.uid = info.gid = 0
         info.uname = info.gname = "root"
         info.mtime = 0
